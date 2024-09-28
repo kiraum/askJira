@@ -43,15 +43,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .expect("Error: SRC_ACCESS_TOKEN environment variable is not set.");
     let endpoint =
         env::var("SRC_ENDPOINT").expect("Error: SRC_ENDPOINT environment variable is not set.");
-    let jira_token =
-        env::var("JIRA_TOKEN").expect("Error: JIRA_TOKEN environment variable is not set.");
-    let jira_host =
-        env::var("JIRA_HOST").expect("Error: JIRA_HOST environment variable is not set.");
-
-    if opt.debug {
-        println!("DEBUG: JIRA_HOST = {}", jira_host);
-        println!("DEBUG: JQL Query = {:?}", opt.jql);
-    }
 
     let chat_completions_url = format!(
         "{}/.api/completions/stream?api-version=1&client-name=jetbrains&client-version=6.0.0-SNAPSHOT'",
@@ -66,6 +57,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
 
     if let Some(jql) = opt.jql {
+        let jira_token = env::var("JIRA_TOKEN").map_err(|_| "JIRA_TOKEN environment variable is not set")?;
+        let jira_host = env::var("JIRA_HOST").map_err(|_| "JIRA_HOST environment variable is not set")?;
+
+        if opt.debug {
+            println!("DEBUG: JIRA_HOST = {}", jira_host);
+            println!("DEBUG: JQL Query = {:?}", jql);
+        }
+
         let jira_data =
             fetch_jira_data(&jira_host, &jira_token, &jql, opt.max_issues, opt.debug).await?;
         let batch_summaries = process_jira_data(
