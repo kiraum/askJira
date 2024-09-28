@@ -79,7 +79,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let aggregated_data = batch_summaries.join("\n\n");
 
         let final_query = format!(
-            "Original question(s):\n{}\n\nAggregated Jira data:\n{}\n\nBased on Jira data, please provide a comprehensive answer for the original question(s).",
+            "Original question(s):\n{}\n\nAggregated Jira data:\n{}\n\nBased on aggregated Jira data, please provide a comprehensive answer for the original question(s).",
             opt.message,
             aggregated_data
         );
