@@ -80,7 +80,7 @@ cargo run -- --message "Your question here"
 
 To include Jira context, use the `--jql` option:
 ````
-cargo run -- --message "Your question here" --jql "project = CI_ECN and created > startOfMonth()"
+cargo run -- --message "Your question here" --jql "project = PROJ and created > startOfMonth()"
 
 ````
 
