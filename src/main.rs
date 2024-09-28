@@ -57,8 +57,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
 
     if let Some(jql) = opt.jql {
-        let jira_token = env::var("JIRA_TOKEN").map_err(|_| "JIRA_TOKEN environment variable is not set")?;
-        let jira_host = env::var("JIRA_HOST").map_err(|_| "JIRA_HOST environment variable is not set")?;
+        let jira_token =
+            env::var("JIRA_TOKEN").map_err(|_| "JIRA_TOKEN environment variable is not set")?;
+        let jira_host =
+            env::var("JIRA_HOST").map_err(|_| "JIRA_HOST environment variable is not set")?;
 
         if opt.debug {
             println!("DEBUG: JIRA_HOST = {}", jira_host);
@@ -252,7 +254,7 @@ async fn process_jira_data(
     const BATCH_SIZE: usize = 200_000;
     let jira_data: Value = serde_json::from_str(&jira_data)?;
 
-    if jira_data.as_array().unwrap().len() == 0 {
+    if jira_data.as_array().unwrap().is_empty() {
         return Ok(vec![format!("Context: No Jira data found.")]);
     }
 
