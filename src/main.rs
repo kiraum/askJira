@@ -7,6 +7,8 @@ use std::error::Error;
 use std::process;
 use std::time::Duration;
 use structopt::StructOpt;
+use log::{info, debug};
+use env_logger::Env;
 
 #[derive(StructOpt, Debug)]
 #[structopt(
@@ -29,6 +31,16 @@ struct Opt {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    let opt = Opt::from_args();
+
+    // Initialize the logger
+    let env = if opt.debug {
+        Env::default().filter_or("RUST_LOG", "debug")
+    } else {
+        Env::default().filter_or("RUST_LOG", "info")
+    };
+    env_logger::init_from_env(env);
+
     let args: Vec<String> = env::args().collect();
 
     if args.len() == 1 {
@@ -37,7 +49,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         process::exit(0);
     }
 
-    let opt = Opt::from_args();
+    debug!("Parsed command line arguments: {:?}", opt);
 
     let access_token = env::var("SRC_ACCESS_TOKEN")
         .expect("Error: SRC_ACCESS_TOKEN environment variable is not set.");
@@ -48,10 +60,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let jira_host =
         env::var("JIRA_HOST").expect("Error: JIRA_HOST environment variable is not set.");
 
-    if opt.debug {
-        println!("DEBUG: JIRA_HOST = {}", jira_host);
-        println!("DEBUG: JQL Query = {:?}", opt.jql);
-    }
+    debug!("Environment variables loaded");
 
     let chat_completions_url = format!(
         "{}/.api/completions/stream?api-version=1&client-name=jetbrains&client-version=6.0.0-SNAPSHOT'",
@@ -65,9 +74,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         HeaderValue::from_str(&format!("token {}", access_token))?,
     );
 
+    debug!("Headers set up");
+
     if let Some(jql) = opt.jql {
+        debug!("Fetching Jira data with JQL: {}", jql);
         let jira_data =
             fetch_jira_data(&jira_host, &jira_token, &jql, opt.max_issues, opt.debug).await?;
+        debug!("Jira data fetched");
+
         let batch_summaries = process_jira_data(
             &opt.message,
             jira_data,
@@ -76,6 +90,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             opt.debug,
         )
         .await?;
+        debug!("Jira data processed");
 
         let aggregated_data = batch_summaries.join("\n\n");
 
@@ -87,10 +102,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
         let final_answer =
             cody_chat(&final_query, &chat_completions_url, &headers, opt.debug).await?;
-        println!("Answer:\n{}", final_answer);
+        info!("Answer:\n{}", final_answer);
     } else {
+        debug!("No JQL provided, sending message directly to Cody");
         let answer = cody_chat(&opt.message, &chat_completions_url, &headers, opt.debug).await?;
-        println!("Answer: {}", answer);
+        info!("Answer: {}", answer);
     }
 
     Ok(())
@@ -116,7 +132,7 @@ async fn fetch_jira_data(
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
     if debug {
-        println!("DEBUG: Sending search request to {}", search_url);
+        debug!("Sending search request to {}", search_url);
     }
 
     let mut start_at = 0;
@@ -136,10 +152,7 @@ async fn fetch_jira_data(
             .await?;
 
         if debug {
-            println!(
-                "DEBUG: Search response status: {}",
-                search_response.status()
-            );
+            debug!("Search response status: {}", search_response.status());
         }
 
         let search_status = search_response.status();
@@ -147,7 +160,7 @@ async fn fetch_jira_data(
 
         if !search_status.is_success() {
             if debug {
-                println!("DEBUG: Search error response body: {}", search_body);
+                debug!("Search error response body: {}", search_body);
             }
             return Err(format!(
                 "Jira search API request failed with status: {}. Body: {}",
@@ -165,11 +178,7 @@ async fn fetch_jira_data(
         start_at += issues.len();
 
         if debug {
-            println!(
-                "DEBUG: Fetched {} issues out of {}",
-                all_issues.len(),
-                total
-            );
+            debug!("Fetched {} issues out of {}", all_issues.len(), total);
         }
 
         if start_at >= total || all_issues.len() >= max_issues {
@@ -178,10 +187,7 @@ async fn fetch_jira_data(
     }
 
     if debug {
-        println!(
-            "DEBUG: Total number of issues fetched: {}",
-            all_issues.len()
-        );
+        debug!("Total number of issues fetched: {}", all_issues.len());
     }
 
     let mut aggregated_data = Vec::new();
@@ -211,20 +217,17 @@ async fn fetch_jira_data(
         aggregated_data.push(issue_data);
         aggregated_count += 1;
         if debug {
-            println!(
-                "DEBUG: Aggregated issue {}/{}",
-                aggregated_count, max_issues
-            );
+            debug!("Aggregated issue {}/{}", aggregated_count, max_issues);
         }
     }
 
     if debug {
-        println!("DEBUG: Total issues aggregated: {}", aggregated_count);
+        debug!("Total issues aggregated: {}", aggregated_count);
     }
 
     let result = serde_json::to_string_pretty(&aggregated_data)?;
     if debug {
-        println!("DEBUG: Aggregated data length: {} characters", result.len());
+        debug!("Aggregated data length: {} characters", result.len());
     }
 
     Ok(result)
@@ -277,7 +280,7 @@ async fn process_jira_data(
     }
 
     if debug {
-        println!("DEBUG: Created {} batches of Jira data", batches.len());
+        debug!("Created {} batches of Jira data", batches.len());
     }
 
     let mut batch_summaries = Vec::new();
@@ -291,11 +294,7 @@ async fn process_jira_data(
         );
         let batch_summary = cody_chat(&batch_query, chat_completions_url, headers, debug).await?;
         if debug {
-            println!(
-                "DEBUG: Processed batch {} answer:\n{}",
-                i + 1,
-                batch_summary
-            );
+            debug!("Processed batch {} answer:\n{}", i + 1, batch_summary);
         }
         batch_summaries.push(batch_summary);
     }
@@ -372,7 +371,7 @@ async fn chat_completions(
     }
 
     if debug {
-        println!("DEBUG: Chat completion response received");
+        debug!("Chat completion response received");
     }
 
     Ok(last_response)
