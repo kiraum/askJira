@@ -1,4 +1,7 @@
+use env_logger::Env;
 use futures::stream::StreamExt;
+use indicatif::{ProgressBar, ProgressStyle};
+use log::{debug, info};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use reqwest::Client;
 use serde_json::{json, Value};
@@ -7,8 +10,6 @@ use std::error::Error;
 use std::process;
 use std::time::Duration;
 use structopt::StructOpt;
-use log::{info, debug};
-use env_logger::Env;
 
 #[derive(StructOpt, Debug)]
 #[structopt(
@@ -33,7 +34,6 @@ struct Opt {
 async fn main() -> Result<(), Box<dyn Error>> {
     let opt = Opt::from_args();
 
-    // Initialize the logger
     let env = if opt.debug {
         Env::default().filter_or("RUST_LOG", "debug")
     } else {
@@ -76,7 +76,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     debug!("Headers set up");
 
-    if let Some(jql) = opt.jql {
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(
+        ProgressStyle::default_spinner()
+            .tick_strings(&["|", "/", "-", "\\"])
+            .template("{spinner:.green} {msg}"),
+    );
+    pb.enable_steady_tick(100);
+    pb.set_message("Processing...");
+
+    let result = if let Some(jql) = opt.jql {
         debug!("Fetching Jira data with JQL: {}", jql);
         let jira_data =
             fetch_jira_data(&jira_host, &jira_token, &jql, opt.max_issues, opt.debug).await?;
@@ -103,13 +112,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let final_answer =
             cody_chat(&final_query, &chat_completions_url, &headers, opt.debug).await?;
         info!("Answer:\n{}", final_answer);
+        Ok(())
     } else {
         debug!("No JQL provided, sending message directly to Cody");
         let answer = cody_chat(&opt.message, &chat_completions_url, &headers, opt.debug).await?;
         info!("Answer: {}", answer);
-    }
+        Ok(())
+    };
 
-    Ok(())
+    pb.finish_and_clear();
+
+    result
 }
 
 async fn fetch_jira_data(
