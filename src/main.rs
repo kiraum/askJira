@@ -1,4 +1,7 @@
+use env_logger::Env;
 use futures::stream::StreamExt;
+use indicatif::{ProgressBar, ProgressStyle};
+use log::{debug, info};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use reqwest::Client;
 use serde_json::{json, Value};
@@ -29,6 +32,15 @@ struct Opt {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    let opt = Opt::from_args();
+
+    let env = if opt.debug {
+        Env::default().filter_or("RUST_LOG", "debug")
+    } else {
+        Env::default().filter_or("RUST_LOG", "info")
+    };
+    env_logger::init_from_env(env);
+
     let args: Vec<String> = env::args().collect();
 
     if args.len() == 1 {
@@ -37,7 +49,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         process::exit(0);
     }
 
-    let opt = Opt::from_args();
+    debug!("Parsed command line arguments: {:?}", opt);
 
     let access_token = env::var("SRC_ACCESS_TOKEN")
         .expect("Error: SRC_ACCESS_TOKEN environment variable is not set.");
@@ -56,27 +68,32 @@ async fn main() -> Result<(), Box<dyn Error>> {
         HeaderValue::from_str(&format!("token {}", access_token))?,
     );
 
-    if let Some(jql) = opt.jql {
+    debug!("Headers set up");
+
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(
+        ProgressStyle::default_spinner()
+            .tick_strings(&["|", "/", "-", "\\"])
+            .template("{spinner:.green} {msg}"),
+    );
+    pb.enable_steady_tick(100);
+    pb.set_message("Processing...");
+
+    let result = if let Some(jql) = opt.jql {
         let jira_token =
             env::var("JIRA_TOKEN").map_err(|_| "JIRA_TOKEN environment variable is not set")?;
         let jira_host =
             env::var("JIRA_HOST").map_err(|_| "JIRA_HOST environment variable is not set")?;
 
-        if opt.debug {
-            println!("DEBUG: JIRA_HOST = {}", jira_host);
-            println!("DEBUG: JQL Query = {:?}", jql);
-        }
+        debug!("JIRA_HOST = {}", jira_host);
+        debug!("JQL Query = {:?}", jql);
 
-        let jira_data =
-            fetch_jira_data(&jira_host, &jira_token, &jql, opt.max_issues, opt.debug).await?;
-        let batch_summaries = process_jira_data(
-            &opt.message,
-            jira_data,
-            &chat_completions_url,
-            &headers,
-            opt.debug,
-        )
-        .await?;
+        let jira_data = fetch_jira_data(&jira_host, &jira_token, &jql, opt.max_issues).await?;
+        debug!("Jira data fetched");
+        let batch_summaries =
+            process_jira_data(&opt.message, jira_data, &chat_completions_url, &headers).await?;
+
+        debug!("Jira data processed");
 
         let aggregated_data = batch_summaries.join("\n\n");
 
@@ -86,15 +103,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
             aggregated_data
         );
 
-        let final_answer =
-            cody_chat(&final_query, &chat_completions_url, &headers, opt.debug).await?;
-        println!("Answer:\n{}", final_answer);
+        let final_answer = cody_chat(&final_query, &chat_completions_url, &headers).await?;
+        info!("Answer:\n{}", final_answer);
+        Ok(())
     } else {
-        let answer = cody_chat(&opt.message, &chat_completions_url, &headers, opt.debug).await?;
-        println!("Answer: {}", answer);
-    }
+        debug!("No JQL provided, sending message directly to Cody");
+        let answer = cody_chat(&opt.message, &chat_completions_url, &headers).await?;
+        info!("Answer: {}", answer);
+        Ok(())
+    };
 
-    Ok(())
+    pb.finish_and_clear();
+
+    result
 }
 
 async fn fetch_jira_data(
@@ -102,7 +123,6 @@ async fn fetch_jira_data(
     token: &str,
     jql: &str,
     max_issues: usize,
-    debug: bool,
 ) -> Result<String, Box<dyn Error>> {
     let client = Client::builder()
         .timeout(Duration::from_secs(300))
@@ -116,9 +136,7 @@ async fn fetch_jira_data(
     );
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
-    if debug {
-        println!("DEBUG: Sending search request to {}", search_url);
-    }
+    debug!("Sending search request to {}", search_url);
 
     let mut start_at = 0;
     let max_results = 50;
@@ -136,20 +154,13 @@ async fn fetch_jira_data(
             .send()
             .await?;
 
-        if debug {
-            println!(
-                "DEBUG: Search response status: {}",
-                search_response.status()
-            );
-        }
+        debug!("Search response status: {}", search_response.status());
 
         let search_status = search_response.status();
         let search_body = search_response.text().await?;
 
         if !search_status.is_success() {
-            if debug {
-                println!("DEBUG: Search error response body: {}", search_body);
-            }
+            debug!("Search error response body: {}", search_body);
             return Err(format!(
                 "Jira search API request failed with status: {}. Body: {}",
                 search_status, search_body
@@ -165,25 +176,14 @@ async fn fetch_jira_data(
         let total = search_data["total"].as_u64().unwrap_or(0) as usize;
         start_at += issues.len();
 
-        if debug {
-            println!(
-                "DEBUG: Fetched {} issues out of {}",
-                all_issues.len(),
-                total
-            );
-        }
+        debug!("Fetched {} issues out of {}", all_issues.len(), total);
 
         if start_at >= total || all_issues.len() >= max_issues {
             break;
         }
     }
 
-    if debug {
-        println!(
-            "DEBUG: Total number of issues fetched: {}",
-            all_issues.len()
-        );
-    }
+    debug!("Total number of issues fetched: {}", all_issues.len());
 
     let mut aggregated_data = Vec::new();
     let mut aggregated_count = 0;
@@ -211,22 +211,13 @@ async fn fetch_jira_data(
 
         aggregated_data.push(issue_data);
         aggregated_count += 1;
-        if debug {
-            println!(
-                "DEBUG: Aggregated issue {}/{}",
-                aggregated_count, max_issues
-            );
-        }
+        debug!("Aggregated issue {}/{}", aggregated_count, max_issues);
     }
 
-    if debug {
-        println!("DEBUG: Total issues aggregated: {}", aggregated_count);
-    }
+    debug!("Total issues aggregated: {}", aggregated_count);
 
     let result = serde_json::to_string_pretty(&aggregated_data)?;
-    if debug {
-        println!("DEBUG: Aggregated data length: {} characters", result.len());
-    }
+    debug!("Aggregated data length: {} characters", result.len());
 
     Ok(result)
 }
@@ -249,7 +240,6 @@ async fn process_jira_data(
     jira_data: String,
     chat_completions_url: &str,
     headers: &HeaderMap,
-    debug: bool,
 ) -> Result<Vec<String>, Box<dyn Error>> {
     const BATCH_SIZE: usize = 200_000;
     let jira_data: Value = serde_json::from_str(&jira_data)?;
@@ -277,9 +267,7 @@ async fn process_jira_data(
         batches.push(current_batch);
     }
 
-    if debug {
-        println!("DEBUG: Created {} batches of Jira data", batches.len());
-    }
+    debug!("Created {} batches of Jira data", batches.len());
 
     let mut batch_summaries = Vec::new();
 
@@ -290,14 +278,8 @@ async fn process_jira_data(
             message,
             batch_str
         );
-        let batch_summary = cody_chat(&batch_query, chat_completions_url, headers, debug).await?;
-        if debug {
-            println!(
-                "DEBUG: Processed batch {} answer:\n{}",
-                i + 1,
-                batch_summary
-            );
-        }
+        let batch_summary = cody_chat(&batch_query, chat_completions_url, headers).await?;
+        debug!("Processed batch {} answer:\n{}", i + 1, batch_summary);
         batch_summaries.push(batch_summary);
     }
 
@@ -308,7 +290,6 @@ async fn cody_chat(
     query: &str,
     chat_completions_url: &str,
     headers: &HeaderMap,
-    debug: bool,
 ) -> Result<String, Box<dyn Error>> {
     let final_prompt = format!(
         r#"
@@ -319,7 +300,7 @@ async fn cody_chat(
         query
     );
 
-    let response = chat_completions(&final_prompt, chat_completions_url, headers, debug).await?;
+    let response = chat_completions(&final_prompt, chat_completions_url, headers).await?;
     Ok(response)
 }
 
@@ -327,7 +308,6 @@ async fn chat_completions(
     query: &str,
     chat_completions_url: &str,
     headers: &HeaderMap,
-    debug: bool,
 ) -> Result<String, Box<dyn Error>> {
     let data = json!({
         "maxTokensToSample": 4000,
@@ -372,9 +352,7 @@ async fn chat_completions(
         }
     }
 
-    if debug {
-        println!("DEBUG: Chat completion response received");
-    }
+    debug!("Chat completion response received");
 
     Ok(last_response)
 }
