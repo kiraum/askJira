@@ -23,7 +23,7 @@ struct Opt {
     #[structopt(long, help = "JQL query to search Jira tickets")]
     jql: Option<String>,
 
-    #[structopt(long, default_value = "50", help = "Maximum number of issues to fetch")]
+    #[structopt(long, default_value = "1000", help = "Maximum number of issues to fetch")]
     max_issues: usize,
 
     #[structopt(long, help = "Enable debug mode")]
