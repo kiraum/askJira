@@ -39,6 +39,9 @@ struct Opt {
 
     #[structopt(long, help = "Enable debug mode")]
     debug: bool,
+
+    #[structopt(long, help = "List available models")]
+    list_models: bool,
 }
 
 #[tokio::main]
@@ -58,13 +61,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
     debug!("Parsed command line arguments: {:?}", opt);
 
-    if opt.message.is_none() && opt.jql.is_none() {
-        warn!("No message or JQL provided. Printing help.");
-        Opt::clap().print_help().unwrap();
-        println!();
-        process::exit(0);
-    }
-
     let access_token = env::var("SRC_ACCESS_TOKEN")
         .expect("Error: SRC_ACCESS_TOKEN environment variable is not set.");
     let endpoint =
@@ -73,6 +69,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
         "{}/.api/completions/stream?api-version=1&client-name=defaultclient&client-version=6.0.0'",
         endpoint
     );
+
+    if opt.list_models {
+        list_available_models(&endpoint).await?;
+        return Ok(());
+    }
+
+    if opt.message.is_none() && opt.jql.is_none() {
+        warn!("No message or JQL provided. Printing help.");
+        Opt::clap().print_help().unwrap();
+        println!();
+        process::exit(0);
+    }
 
     debug!("Chat completions URL: {}", chat_completions_url);
 
@@ -156,6 +164,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     pb.finish_and_clear();
     result
+}
+
+async fn list_available_models(endpoint: &str) -> Result<(), Box<dyn Error>> {
+    let models_url = format!("{}/.api/llm/models", endpoint);
+
+    let client = Client::new();
+    let response = client
+        .get(&models_url)
+        .header("Accept", "application/json")
+        .send()
+        .await?;
+
+    let models: Value = response.json().await?;
+    println!("Available models:");
+    for model in models["data"].as_array().unwrap() {
+        println!("- ID: {}", model["id"].as_str().unwrap());
+        println!("  Owned by: {}", model["owned_by"].as_str().unwrap());
+        println!();
+    }
+
+    Ok(())
 }
 
 async fn fetch_jira_data(
