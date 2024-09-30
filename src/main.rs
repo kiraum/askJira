@@ -74,9 +74,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    let available_models = fetch_available_models(&endpoint).await?;
-
     let model = if let Some(set_model) = opt.set_model {
+        let available_models = fetch_available_models(&endpoint).await?;
         if available_models.contains(&set_model) {
             set_model
         } else {
@@ -98,7 +97,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let chat_completions_url = format!(
-        "{}/.api/completions/stream?api-version=1&client-name=defaultclient&client-version=6.0.0'",
+        "{}/.api/completions/stream?api-version=1&client-name=defaultclient&client-version=6.0.0",
         endpoint
     );
 
@@ -198,12 +197,21 @@ async fn fetch_available_models(endpoint: &str) -> Result<Vec<String>, Box<dyn E
         .send()
         .await?;
 
-    let models: Value = response.json().await?;
+    let response_text = response.text().await?;
+    debug!("Raw response from models API: {}", response_text);
+
+    let models: Value = serde_json::from_str(&response_text).map_err(|e| {
+        format!(
+            "Failed to parse JSON: {}. Raw response: {}",
+            e, response_text
+        )
+    })?;
+
     let available_models = models["data"]
         .as_array()
-        .unwrap()
+        .ok_or("'data' field is not an array")?
         .iter()
-        .map(|model| model["id"].as_str().unwrap().to_string())
+        .filter_map(|model| model["id"].as_str().map(String::from))
         .collect();
 
     Ok(available_models)
