@@ -153,6 +153,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 batch_summaries.len()
             );
 
+            if batch_summaries.is_empty() {
+                println!("Answer: No Jira data found for the given query.");
+                return Ok(());
+            }
+
             let aggregated_summaries = batch_summaries.join("\n\n--- Next Batch Summary ---\n\n");
 
             let final_query = format!(
@@ -298,8 +303,8 @@ async fn fetch_jira_data(
     debug!("Total number of issues fetched: {}", all_issues.len());
 
     if all_issues.len() >= max_issues {
-        warn!(
-            "Reached max_issues limit ({}). Not all Jira data was fetched.",
+        println!(
+            "Note: Reached max_issues limit ({}). Not all Jira data was fetched.",
             max_issues
         );
     }
@@ -366,7 +371,7 @@ async fn process_jira_data(
     let jira_data: Value = serde_json::from_str(&jira_data)?;
     if jira_data.as_array().unwrap().is_empty() {
         warn!("No Jira data found");
-        return Ok(vec![format!("Context: No Jira data found.")]);
+        return Ok(Vec::new());
     }
 
     let mut batches = Vec::new();
@@ -452,11 +457,7 @@ async fn chat_completions(
     headers: &HeaderMap,
     model: &str,
 ) -> Result<String, Box<dyn Error>> {
-    let messages = if chat_completions_url.contains("https://sourcegraph.com") {
-        json!([{"speaker": "human", "text": query}])
-    } else {
-        json!([{"role": "user", "content": query}])
-    };
+    let messages = json!([{"speaker": "human", "text": query}]);
 
     let data = json!({
         "maxTokensToSample": 4000,
