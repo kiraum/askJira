@@ -1,7 +1,7 @@
 use env_logger::Env;
 use futures::stream::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
-use log::{debug, info};
+use log::{debug, warn};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use reqwest::Client;
 use serde_json::{json, Value};
@@ -17,16 +17,24 @@ use structopt::StructOpt;
     about = "Ask Cody a question or a question about Jira tickets if JQL is provided."
 )]
 struct Opt {
-    #[structopt(long, required = true, help = "The message to send to Cody")]
-    message: String,
+    #[structopt(long, help = "The message to send to Cody")]
+    message: Option<String>,
 
     #[structopt(long, help = "JQL query to search Jira tickets")]
     jql: Option<String>,
 
-    #[structopt(long, default_value = "1000", help = "Maximum number of issues to fetch")]
+    #[structopt(
+        long,
+        default_value = "1000",
+        help = "Maximum number of issues to fetch"
+    )]
     max_issues: usize,
 
-    #[structopt(long, default_value = "100", help = "Maximum number of results per Jira API call")]
+    #[structopt(
+        long,
+        default_value = "100",
+        help = "Maximum number of results per Jira API call"
+    )]
     max_results: usize,
 
     #[structopt(long, help = "Enable debug mode")]
@@ -44,25 +52,29 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
     env_logger::init_from_env(env);
 
-    let args: Vec<String> = env::args().collect();
+    debug!(
+        "Command line arguments: {:?}",
+        std::env::args().collect::<Vec<String>>()
+    );
+    debug!("Parsed command line arguments: {:?}", opt);
 
-    if args.len() == 1 {
+    if opt.message.is_none() && opt.jql.is_none() {
+        warn!("No message or JQL provided. Printing help.");
         Opt::clap().print_help().unwrap();
         println!();
         process::exit(0);
     }
 
-    debug!("Parsed command line arguments: {:?}", opt);
-
     let access_token = env::var("SRC_ACCESS_TOKEN")
         .expect("Error: SRC_ACCESS_TOKEN environment variable is not set.");
     let endpoint =
         env::var("SRC_ENDPOINT").expect("Error: SRC_ENDPOINT environment variable is not set.");
-
     let chat_completions_url = format!(
-        "{}/.api/completions/stream?api-version=1&client-name=jetbrains&client-version=6.0.0-SNAPSHOT'",
+        "{}/.api/completions/stream?api-version=1&client-name=defaultclient&client-version=6.0.0'",
         endpoint
     );
+
+    debug!("Chat completions URL: {}", chat_completions_url);
 
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
@@ -71,7 +83,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         HeaderValue::from_str(&format!("token {}", access_token))?,
     );
 
-    debug!("Headers set up");
+    debug!("Headers set up: {:?}", headers);
 
     let pb = ProgressBar::new_spinner();
     pb.set_style(
@@ -82,42 +94,67 @@ async fn main() -> Result<(), Box<dyn Error>> {
     pb.enable_steady_tick(100);
     pb.set_message("Processing...");
 
-    let result = if let Some(jql) = opt.jql {
-        let jira_token =
-            env::var("JIRA_TOKEN").map_err(|_| "JIRA_TOKEN environment variable is not set")?;
-        let jira_host =
-            env::var("JIRA_HOST").map_err(|_| "JIRA_HOST environment variable is not set")?;
+    let result = match (opt.jql, opt.message) {
+        (Some(jql), Some(message)) => {
+            debug!(
+                "Both JQL and message provided. JQL: {:?}, Message: {:?}",
+                jql, message
+            );
+            let jira_token =
+                env::var("JIRA_TOKEN").map_err(|_| "JIRA_TOKEN environment variable is not set")?;
+            let jira_host =
+                env::var("JIRA_HOST").map_err(|_| "JIRA_HOST environment variable is not set")?;
 
-        debug!("JIRA_HOST = {}", jira_host);
-        debug!("JQL Query = {:?}", jql);
+            debug!("JIRA_HOST = {}", jira_host);
+            debug!("JQL Query = {:?}", jql);
 
-        let jira_data = fetch_jira_data(&jira_host, &jira_token, &jql, opt.max_issues, opt.max_results).await?;
-        debug!("Jira data fetched");
-        let batch_summaries =
-            process_jira_data(&opt.message, jira_data, &chat_completions_url, &headers).await?;
+            let jira_data = fetch_jira_data(
+                &jira_host,
+                &jira_token,
+                &jql,
+                opt.max_issues,
+                opt.max_results,
+            )
+            .await?;
+            debug!("Jira data fetched, length: {} characters", jira_data.len());
 
-        debug!("Jira data processed");
+            let batch_summaries =
+                process_jira_data(&message, jira_data, &chat_completions_url, &headers).await?;
+            debug!(
+                "Jira data processed, {} batch summaries",
+                batch_summaries.len()
+            );
 
-        let aggregated_data = batch_summaries.join("\n\n");
+            let aggregated_data = batch_summaries.join("\n\n");
+            let final_query = format!(
+                "Original question(s):\n{}\n\nAggregated Jira data:\n{}\n\nBased on aggregated Jira data, please provide a comprehensive answer for the original question(s).",
+                message,
+                aggregated_data
+            );
 
-        let final_query = format!(
-            "Original question(s):\n{}\n\nAggregated Jira data:\n{}\n\nBased on aggregated Jira data, please provide a comprehensive answer for the original question(s).",
-            opt.message,
-            aggregated_data
-        );
-
-        let final_answer = cody_chat(&final_query, &chat_completions_url, &headers).await?;
-        info!("Answer:\n{}", final_answer);
-        Ok(())
-    } else {
-        debug!("No JQL provided, sending message directly to Cody");
-        let answer = cody_chat(&opt.message, &chat_completions_url, &headers).await?;
-        info!("Answer: {}", answer);
-        Ok(())
+            debug!("Final query length: {} characters", final_query.len());
+            let final_answer = cody_chat(&final_query, &chat_completions_url, &headers).await?;
+            println!("Answer:\n{}", final_answer);
+            Ok(())
+        }
+        (None, Some(message)) => {
+            debug!("Only message provided, no JQL. Message: {:?}", message);
+            let answer = cody_chat(&message, &chat_completions_url, &headers).await?;
+            pb.finish_and_clear();
+            println!("Answer:\n{}", answer);
+            Ok(())
+        }
+        (Some(_), None) => {
+            warn!("JQL provided without a message");
+            Err("When using --jql, --message is also required".into())
+        }
+        (None, None) => {
+            warn!("Neither JQL nor message provided");
+            Err("Either --message or both --message and --jql must be provided".into())
+        }
     };
 
     pb.finish_and_clear();
-
     result
 }
 
@@ -131,6 +168,7 @@ async fn fetch_jira_data(
     let client = Client::builder()
         .timeout(Duration::from_secs(300))
         .build()?;
+
     let search_url = format!("{}/rest/api/2/search", host);
 
     let mut headers = HeaderMap::new();
@@ -144,7 +182,6 @@ async fn fetch_jira_data(
 
     let mut start_at = 0;
     let mut all_issues = Vec::new();
-    let mut total_issues = 0;
 
     loop {
         let search_response = client
@@ -174,12 +211,16 @@ async fn fetch_jira_data(
 
         let search_data: Value = serde_json::from_str(&search_body)?;
         let issues = search_data["issues"].as_array().ok_or("No issues found")?;
-
         all_issues.extend_from_slice(issues);
-        total_issues = search_data["total"].as_u64().unwrap_or(0) as usize;
+
+        let total_issues = search_data["total"].as_u64().unwrap_or(0) as usize;
         start_at += issues.len();
 
-        debug!("Fetched {} issues out of {}", all_issues.len(), total_issues);
+        debug!(
+            "Fetched {} issues out of {}",
+            all_issues.len(),
+            total_issues
+        );
 
         if start_at >= total_issues || all_issues.len() >= max_issues {
             break;
@@ -188,8 +229,11 @@ async fn fetch_jira_data(
 
     debug!("Total number of issues fetched: {}", all_issues.len());
 
-    if all_issues.len() >= max_issues && total_issues > max_issues {
-        info!("Warning: Reached max_issues limit ({}). Not all Jira data was fetched. Total available issues: {}", max_issues, total_issues);
+    if all_issues.len() >= max_issues {
+        warn!(
+            "Reached max_issues limit ({}). Not all Jira data was fetched.",
+            max_issues
+        );
     }
 
     let mut aggregated_data = Vec::new();
@@ -197,8 +241,8 @@ async fn fetch_jira_data(
 
     for issue in all_issues.iter().take(max_issues) {
         let key = issue["key"].as_str().ok_or("Issue key not found")?;
-
         let comments_url = format!("{}/rest/api/2/issue/{}/comment", host, key);
+
         let comments_response = client
             .get(&comments_url)
             .headers(headers.clone())
@@ -215,9 +259,9 @@ async fn fetch_jira_data(
         });
 
         remove_null_values(&mut issue_data);
-
         aggregated_data.push(issue_data);
         aggregated_count += 1;
+
         debug!("Aggregated issue {}/{}", aggregated_count, max_issues);
     }
 
@@ -249,9 +293,10 @@ async fn process_jira_data(
     headers: &HeaderMap,
 ) -> Result<Vec<String>, Box<dyn Error>> {
     const BATCH_SIZE: usize = 200_000;
-    let jira_data: Value = serde_json::from_str(&jira_data)?;
 
+    let jira_data: Value = serde_json::from_str(&jira_data)?;
     if jira_data.as_array().unwrap().is_empty() {
+        warn!("No Jira data found");
         return Ok(vec![format!("Context: No Jira data found.")]);
     }
 
@@ -277,13 +322,18 @@ async fn process_jira_data(
     debug!("Created {} batches of Jira data", batches.len());
 
     let mut batch_summaries = Vec::new();
-
     for (i, batch) in batches.into_iter().enumerate() {
         let batch_str = serde_json::to_string(&batch)?;
         let batch_query = format!(
             "Question(s):\n{}\n\nJira data:\n{}\n\nBased on Jira data, please provide a comprehensive answer for the question(s).",
             message,
             batch_str
+        );
+
+        debug!(
+            "Processing batch {} of size {} characters",
+            i + 1,
+            batch_query.len()
         );
         let batch_summary = cody_chat(&batch_query, chat_completions_url, headers).await?;
         debug!("Processed batch {} answer:\n{}", i + 1, batch_summary);
@@ -307,7 +357,15 @@ async fn cody_chat(
         query
     );
 
+    debug!(
+        "Sending chat query of length: {} characters",
+        final_prompt.len()
+    );
     let response = chat_completions(&final_prompt, chat_completions_url, headers).await?;
+    debug!(
+        "Received chat response of length: {} characters",
+        response.len()
+    );
     Ok(response)
 }
 
@@ -318,8 +376,8 @@ async fn chat_completions(
 ) -> Result<String, Box<dyn Error>> {
     let data = json!({
         "maxTokensToSample": 4000,
-        "messages": [{"speaker": "human", "text": query}],
-        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": query}],
+        "model": "openai/gpt-4o",
         "temperature": 0.2,
         "topK": -1,
         "topP": -1,
@@ -329,6 +387,11 @@ async fn chat_completions(
     let client = Client::builder()
         .timeout(Duration::from_secs(300))
         .build()?;
+
+    debug!(
+        "Sending chat completion request to {}",
+        chat_completions_url
+    );
     let mut response = client
         .post(chat_completions_url)
         .headers(headers.clone())
@@ -359,7 +422,10 @@ async fn chat_completions(
         }
     }
 
-    debug!("Chat completion response received");
-
+    debug!(
+        "Chat completion response received, length: {} characters",
+        last_response.len()
+    );
+    debug!("Response content: {}", last_response);
     Ok(last_response)
 }
