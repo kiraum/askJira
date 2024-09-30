@@ -74,6 +74,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
+    let available_models = fetch_available_models(&endpoint).await?;
+
+    let model = if let Some(set_model) = opt.set_model {
+        if available_models.contains(&set_model) {
+            set_model
+        } else {
+            return Err(format!(
+                "Invalid model: {}. Use --list-models to see available models.",
+                set_model
+            )
+            .into());
+        }
+    } else {
+        "anthropic::2023-06-01::claude-3.5-sonnet".to_string()
+    };
+
     if opt.message.is_none() && opt.jql.is_none() {
         warn!("No message or JQL provided. Printing help.");
         Opt::clap().print_help().unwrap();
@@ -105,10 +121,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
     pb.enable_steady_tick(100);
     pb.set_message("Processing...");
-
-    let model = opt
-        .set_model
-        .unwrap_or_else(|| "anthropic::2023-06-01::claude-3.5-sonnet".to_string());
 
     let result = match (opt.jql, opt.message) {
         (Some(jql), Some(message)) => {
@@ -145,7 +157,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let aggregated_summaries = batch_summaries.join("\n\n--- Next Batch Summary ---\n\n");
 
             let final_query = format!(
-                "Original question(s):\n{}\n\nSummaries of Jira data batches:\n{}\n\nBased on these batch summaries, please provide a comprehensive and cohesive answer to the original question(s). Synthesize the information from all batch summaries, highlighting key points, trends, and insights relevant to the question(s).",
+                "Original question(s):\n{}\n\nJira data batches:\n{}\n\nBased on these batches, please provide a comprehensive and cohesive answer to the original question(s). Synthesize the information from all batch summaries, highlighting key points, trends, and insights relevant to the question(s).",
                 message,
                 aggregated_summaries
             );
@@ -177,9 +189,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     result
 }
 
-async fn list_available_models(endpoint: &str) -> Result<(), Box<dyn Error>> {
+async fn fetch_available_models(endpoint: &str) -> Result<Vec<String>, Box<dyn Error>> {
     let models_url = format!("{}/.api/llm/models", endpoint);
-
     let client = Client::new();
     let response = client
         .get(&models_url)
@@ -188,13 +199,22 @@ async fn list_available_models(endpoint: &str) -> Result<(), Box<dyn Error>> {
         .await?;
 
     let models: Value = response.json().await?;
-    println!("Available models:");
-    for model in models["data"].as_array().unwrap() {
-        println!("- ID: {}", model["id"].as_str().unwrap());
-        println!("  Owned by: {}", model["owned_by"].as_str().unwrap());
-        println!();
-    }
+    let available_models = models["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|model| model["id"].as_str().unwrap().to_string())
+        .collect();
 
+    Ok(available_models)
+}
+
+async fn list_available_models(endpoint: &str) -> Result<(), Box<dyn Error>> {
+    let available_models = fetch_available_models(endpoint).await?;
+    println!("Available models:");
+    for model in available_models {
+        println!("- {}", model);
+    }
     Ok(())
 }
 
