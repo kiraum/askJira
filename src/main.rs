@@ -26,6 +26,9 @@ struct Opt {
     #[structopt(long, default_value = "1000", help = "Maximum number of issues to fetch")]
     max_issues: usize,
 
+    #[structopt(long, default_value = "100", help = "Maximum number of results per Jira API call")]
+    max_results: usize,
+
     #[structopt(long, help = "Enable debug mode")]
     debug: bool,
 }
@@ -88,7 +91,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         debug!("JIRA_HOST = {}", jira_host);
         debug!("JQL Query = {:?}", jql);
 
-        let jira_data = fetch_jira_data(&jira_host, &jira_token, &jql, opt.max_issues).await?;
+        let jira_data = fetch_jira_data(&jira_host, &jira_token, &jql, opt.max_issues, opt.max_results).await?;
         debug!("Jira data fetched");
         let batch_summaries =
             process_jira_data(&opt.message, jira_data, &chat_completions_url, &headers).await?;
@@ -123,6 +126,7 @@ async fn fetch_jira_data(
     token: &str,
     jql: &str,
     max_issues: usize,
+    max_results: usize,
 ) -> Result<String, Box<dyn Error>> {
     let client = Client::builder()
         .timeout(Duration::from_secs(300))
@@ -139,7 +143,6 @@ async fn fetch_jira_data(
     debug!("Sending search request to {}", search_url);
 
     let mut start_at = 0;
-    let max_results = 50;
     let mut all_issues = Vec::new();
     let mut total_issues = 0;
 
