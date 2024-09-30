@@ -141,6 +141,7 @@ async fn fetch_jira_data(
     let mut start_at = 0;
     let max_results = 50;
     let mut all_issues = Vec::new();
+    let mut total_issues = 0;
 
     loop {
         let search_response = client
@@ -172,18 +173,21 @@ async fn fetch_jira_data(
         let issues = search_data["issues"].as_array().ok_or("No issues found")?;
 
         all_issues.extend_from_slice(issues);
-
-        let total = search_data["total"].as_u64().unwrap_or(0) as usize;
+        total_issues = search_data["total"].as_u64().unwrap_or(0) as usize;
         start_at += issues.len();
 
-        debug!("Fetched {} issues out of {}", all_issues.len(), total);
+        debug!("Fetched {} issues out of {}", all_issues.len(), total_issues);
 
-        if start_at >= total || all_issues.len() >= max_issues {
+        if start_at >= total_issues || all_issues.len() >= max_issues {
             break;
         }
     }
 
     debug!("Total number of issues fetched: {}", all_issues.len());
+
+    if all_issues.len() >= max_issues && total_issues > max_issues {
+        info!("Warning: Reached max_issues limit ({}). Not all Jira data was fetched. Total available issues: {}", max_issues, total_issues);
+    }
 
     let mut aggregated_data = Vec::new();
     let mut aggregated_count = 0;
