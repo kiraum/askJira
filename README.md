@@ -1,6 +1,6 @@
-# askJira - Cody Chat CLI for Jira Integration
+# askJira - Cody Chat API for Jira Integration
 
-This is a Rust implementation of a Cody Chat CLI that interacts with the Sourcegraph API and Jira to provide context-aware responses based on Jira ticket data.
+This is a Rust implementation of a Cody Chat API that interacts with the Sourcegraph API and Jira to provide context-aware responses based on Jira ticket data.
 
 ## Prerequisites
 
@@ -15,6 +15,9 @@ This project uses the following dependencies:
 - serde_json (1.0+)
 - structopt (0.3+)
 - futures (0.3+)
+- env_logger
+- indicatif
+- log
 
 ## Environment Variables
 
@@ -85,12 +88,15 @@ cargo run -- --message "Your question here" --jql "project = PROJ and created > 
 ````
 
 Additional options:
-- `--max-issues`: Maximum number of issues to fetch (default: 50)
+- `--max-issues`: Maximum number of issues to fetch (default: 1000)
+- `--max-results`: Maximum number of results per Jira API call (default: 100)
 - `--debug`: Enable debug mode
+- `--list-models`: List available models
+- `--set-model`: Set the model to use
 
 Example with all options:
 ```
-cargo run -- --message "What are the top priority bugs?" --jql "project = PROJ AND type = Bug ORDER BY priority DESC" --max-issues 50 --debug
+cargo run -- --message "What are the top priority bugs?" --jql "project = PROJ AND type = Bug ORDER BY priority DESC" --max-issues 1000 --max-results 100 --debug --set-model "anthropic::2023-06-01::claude-3.5-sonnet"
 ```
 
 ## Features
@@ -100,9 +106,11 @@ cargo run -- --message "What are the top priority bugs?" --jql "project = PROJ A
 - Handles large amounts of Jira data by processing in batches
 - Provides comprehensive answers based on Jira context
 - Debug mode for troubleshooting
+- Ability to list available models and set a specific model
+- Progress indicator during processing
 
 ## Note
 
 This client is designed to work with the Sourcegraph API and Jira API. Make sure you have the necessary permissions and valid access tokens to use this application.
 
-This code was tested against Sourcegraph Enterprise and Jira Cloud/Server.
+This code was tested against Sourcegraph Pro/Enterprise and Jira Cloud/Server.
