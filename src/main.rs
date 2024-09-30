@@ -406,7 +406,7 @@ async fn chat_completions(
     let data = json!({
         "maxTokensToSample": 4000,
         "messages": [{"role": "user", "content": query}],
-        "model": "openai/gpt-4o",
+        "model": "anthropic::2023-06-01::claude-3.5-sonnet",
         "temperature": 0.2,
         "topK": -1,
         "topP": -1,
