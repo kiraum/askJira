@@ -142,11 +142,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 batch_summaries.len()
             );
 
-            let aggregated_data = batch_summaries.join("\n\n");
+            let aggregated_summaries = batch_summaries.join("\n\n--- Next Batch Summary ---\n\n");
+
             let final_query = format!(
-                "Original question(s):\n{}\n\nAggregated Jira data:\n{}\n\nBased on aggregated Jira data, please provide a comprehensive answer for the original question(s).",
+                "Original question(s):\n{}\n\nSummaries of Jira data batches:\n{}\n\nBased on these batch summaries, please provide a comprehensive and cohesive answer to the original question(s). Synthesize the information from all batch summaries, highlighting key points, trends, and insights relevant to the question(s).",
                 message,
-                aggregated_data
+                aggregated_summaries
             );
 
             debug!("Final query length: {} characters", final_query.len());
@@ -359,7 +360,8 @@ async fn process_jira_data(
         batches.push(current_batch);
     }
 
-    debug!("Created {} batches of Jira data", batches.len());
+    let total_batches = batches.len();
+    debug!("Created {} batches of Jira data", total_batches);
 
     let mut batch_summaries = Vec::new();
     for (i, batch) in batches.into_iter().enumerate() {
@@ -371,12 +373,18 @@ async fn process_jira_data(
         );
 
         debug!(
-            "Processing batch {} of size {} characters",
+            "Processing batch {} out of {} of size {} characters",
             i + 1,
+            total_batches,
             batch_query.len()
         );
         let batch_summary = cody_chat(&batch_query, chat_completions_url, headers, model).await?;
-        debug!("Processed batch {} answer:\n{}", i + 1, batch_summary);
+        debug!(
+            "Processed batch {} out of {} answer:\n{}",
+            i + 1,
+            total_batches,
+            batch_summary
+        );
         batch_summaries.push(batch_summary);
     }
 
@@ -416,9 +424,15 @@ async fn chat_completions(
     headers: &HeaderMap,
     model: &str,
 ) -> Result<String, Box<dyn Error>> {
+    let messages = if chat_completions_url.contains("https://sourcegraph.com") {
+        json!([{"speaker": "human", "text": query}])
+    } else {
+        json!([{"role": "user", "content": query}])
+    };
+
     let data = json!({
         "maxTokensToSample": 4000,
-        "messages": [{"role": "user", "content": query}],
+        "messages": messages,
         "model": model,
         "temperature": 0.2,
         "topK": -1,
