@@ -11,18 +11,22 @@ use std::process;
 use std::time::Duration;
 use structopt::StructOpt;
 
+/// Command-line options for the askJira application
 #[derive(StructOpt, Debug)]
 #[structopt(
     name = "askJira",
     about = "Ask Cody a question or a question about Jira tickets if JQL is provided."
 )]
 struct Opt {
+    /// The message to send to Cody
     #[structopt(long, help = "The message to send to Cody")]
     message: Option<String>,
 
+    /// JQL query to search Jira tickets
     #[structopt(long, help = "JQL query to search Jira tickets")]
     jql: Option<String>,
 
+    /// Maximum number of issues to fetch
     #[structopt(
         long,
         default_value = "1000",
@@ -30,6 +34,7 @@ struct Opt {
     )]
     max_issues: usize,
 
+    /// Maximum number of results per Jira API call
     #[structopt(
         long,
         default_value = "100",
@@ -37,20 +42,25 @@ struct Opt {
     )]
     max_results: usize,
 
+    /// Enable debug mode
     #[structopt(long, help = "Enable debug mode")]
     debug: bool,
 
+    /// List available models
     #[structopt(long, help = "List available models")]
     list_models: bool,
 
+    /// Set the model to use
     #[structopt(long, help = "Set the model to use")]
     set_model: Option<String>,
 }
 
+/// Main function to run the askJira application
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let opt = Opt::from_args();
 
+    // Set up logging based on debug flag
     let env = if opt.debug {
         Env::default().filter_or("RUST_LOG", "debug")
     } else {
@@ -64,16 +74,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
     debug!("Parsed command line arguments: {:?}", opt);
 
+    // Get environment variables
     let access_token = env::var("SRC_ACCESS_TOKEN")
         .expect("Error: SRC_ACCESS_TOKEN environment variable is not set.");
     let endpoint =
         env::var("SRC_ENDPOINT").expect("Error: SRC_ENDPOINT environment variable is not set.");
 
+    // List available models if requested
     if opt.list_models {
         list_available_models(&endpoint, &access_token).await?;
         return Ok(());
     }
 
+    // Set the model to use
     let model = if let Some(set_model) = opt.set_model {
         let available_models = fetch_available_models(&endpoint, &access_token).await?;
         if available_models.contains(&set_model) {
@@ -89,6 +102,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         "anthropic::2023-06-01::claude-3.5-sonnet".to_string()
     };
 
+    // Check if message or JQL is provided
     if opt.message.is_none() && opt.jql.is_none() {
         warn!("No message or JQL provided. Printing help.");
         Opt::clap().print_help().unwrap();
@@ -96,22 +110,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
         process::exit(0);
     }
 
+    // Set up chat completions URL
     let chat_completions_url = format!(
         "{}/.api/completions/stream?api-version=1&client-name=defaultclient&client-version=6.0.0",
         endpoint
     );
-
     debug!("Chat completions URL: {}", chat_completions_url);
 
+    // Set up headers
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     headers.insert(
         AUTHORIZATION,
         HeaderValue::from_str(&format!("token {}", access_token))?,
     );
-
     debug!("Headers set up: {:?}", headers);
 
+    // Set up progress bar
     let pb = ProgressBar::new_spinner();
     pb.set_style(
         ProgressStyle::default_spinner()
@@ -121,6 +136,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     pb.enable_steady_tick(100);
     pb.set_message("Processing...");
 
+    // Process the request based on provided options
     let result = match (opt.jql, opt.message) {
         (Some(jql), Some(message)) => {
             debug!(
@@ -193,6 +209,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     result
 }
 
+/// Fetch available models from the API
 async fn fetch_available_models(
     endpoint: &str,
     access_token: &str,
@@ -229,6 +246,7 @@ async fn fetch_available_models(
     Ok(available_models)
 }
 
+/// List available models
 async fn list_available_models(endpoint: &str, access_token: &str) -> Result<(), Box<dyn Error>> {
     let available_models = fetch_available_models(endpoint, access_token).await?;
     println!("Available models:");
@@ -238,6 +256,7 @@ async fn list_available_models(endpoint: &str, access_token: &str) -> Result<(),
     Ok(())
 }
 
+/// Fetch Jira data based on the provided JQL query
 async fn fetch_jira_data(
     host: &str,
     token: &str,
@@ -353,6 +372,7 @@ async fn fetch_jira_data(
     Ok(result)
 }
 
+/// Remove null values from a JSON Value
 fn remove_null_values(value: &mut Value) {
     if let Value::Object(map) = value {
         map.retain(|_, v| !v.is_null());
@@ -366,6 +386,7 @@ fn remove_null_values(value: &mut Value) {
     }
 }
 
+/// Process Jira data by batching and summarizing
 async fn process_jira_data(
     message: &str,
     jira_data: String,
@@ -431,6 +452,7 @@ async fn process_jira_data(
     Ok(batch_summaries)
 }
 
+/// Send a chat query to Cody and get a response
 async fn cody_chat(
     query: &str,
     chat_completions_url: &str,
@@ -458,6 +480,7 @@ async fn cody_chat(
     Ok(response)
 }
 
+/// Send a chat completion request and process the streaming response
 async fn chat_completions(
     query: &str,
     chat_completions_url: &str,
