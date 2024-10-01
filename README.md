@@ -1,6 +1,6 @@
 # askJira - Cody Chat API for Jira Integration
 
-This is a Rust implementation of a Cody Chat API that interacts with the Sourcegraph API and Jira to provide context-aware responses based on Jira ticket data.
+A Rust-based CLI tool that integrates Cody's AI capabilities with Jira ticket data to provide context-aware responses.
 
 ## Prerequisites
 
