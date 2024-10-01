@@ -1,5 +1,4 @@
 use env_logger::Env;
-use futures::stream::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use log::{debug, warn};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
@@ -111,10 +110,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Set up chat completions URL
-    let chat_completions_url = format!(
-        "{}/.api/completions/stream?api-version=1&client-name=defaultclient&client-version=6.0.0",
-        endpoint
-    );
+    let chat_completions_url = format!("{}/.api/llm/chat/completions", endpoint);
     debug!("Chat completions URL: {}", chat_completions_url);
 
     // Set up headers
@@ -124,6 +120,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         AUTHORIZATION,
         HeaderValue::from_str(&format!("token {}", access_token))?,
     );
+    headers.insert("Accept", HeaderValue::from_static("application/json"));
     debug!("Headers set up: {:?}", headers);
 
     // Set up progress bar
@@ -256,7 +253,6 @@ async fn list_available_models(endpoint: &str, access_token: &str) -> Result<(),
     Ok(())
 }
 
-/// Fetch Jira data based on the provided JQL query
 async fn fetch_jira_data(
     host: &str,
     token: &str,
@@ -459,20 +455,15 @@ async fn cody_chat(
     headers: &HeaderMap,
     model: &str,
 ) -> Result<String, Box<dyn Error>> {
-    let final_prompt = format!(
-        r#"
-    You are given the following query:
-    {}
-    Please provide a concise and informative answer.
-    "#,
-        query
-    );
+    let messages = json!([
+        {
+            "role": "user",
+            "content": query
+        }
+    ]);
 
-    debug!(
-        "Sending chat query of length: {} characters",
-        final_prompt.len()
-    );
-    let response = chat_completions(&final_prompt, chat_completions_url, headers, model).await?;
+    debug!("Sending chat query of length: {} characters", query.len());
+    let response = chat_completions(messages, chat_completions_url, headers, model).await?;
     debug!(
         "Received chat response of length: {} characters",
         response.len()
@@ -480,23 +471,18 @@ async fn cody_chat(
     Ok(response)
 }
 
-/// Send a chat completion request and process the streaming response
+/// Send a chat completion request and process the response
 async fn chat_completions(
-    query: &str,
+    messages: serde_json::Value,
     chat_completions_url: &str,
     headers: &HeaderMap,
     model: &str,
 ) -> Result<String, Box<dyn Error>> {
-    let messages = json!([{"speaker": "human", "text": query}]);
-
     let data = json!({
-        "maxTokensToSample": 4000,
-        "messages": messages,
         "model": model,
-        "temperature": 0.2,
-        "topK": -1,
-        "topP": -1,
-        "stream": true,
+        "max_tokens": 2000,
+        "messages": messages,
+        "stream": false
     });
 
     let client = Client::builder()
@@ -507,40 +493,37 @@ async fn chat_completions(
         "Sending chat completion request to {}",
         chat_completions_url
     );
-    let mut response = client
+    debug!("Headers being sent: {:?}", headers);
+    let response = client
         .post(chat_completions_url)
         .headers(headers.clone())
         .json(&data)
         .send()
-        .await?
-        .bytes_stream();
+        .await?;
 
-    let mut last_response = String::new();
-    let mut buffer = String::new();
+    // Print the status code
+    debug!("Response status: {:?}", response.status());
 
-    while let Some(chunk) = response.next().await {
-        let chunk = chunk?;
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
+    // Get the response text
+    let response_text = response.text().await?;
 
-        while let Some(pos) = buffer.find('\n') {
-            let line = buffer.drain(..=pos).collect::<String>();
-            if line.starts_with("data: ") {
-                let data = line.trim_start_matches("data: ");
-                if data != "[DONE]" {
-                    if let Ok(event_data) = serde_json::from_str::<Value>(data) {
-                        if let Some(completion) = event_data["completion"].as_str() {
-                            last_response = completion.to_string();
-                        }
-                    }
-                }
-            }
-        }
-    }
+    // Print the raw response
+    debug!("Raw response: {}", response_text);
 
-    debug!(
-        "Chat completion response received, length: {} characters",
-        last_response.len()
-    );
-    debug!("Response content: {}", last_response);
-    Ok(last_response)
+    // Try to parse the response as JSON
+    let response_body: Value = serde_json::from_str(&response_text).map_err(|e| {
+        format!(
+            "Failed to parse JSON: {}. Raw response: {}",
+            e, response_text
+        )
+    })?;
+
+    debug!("Chat completion response received: {:?}", response_body);
+
+    let content = response_body["choices"][0]["message"]["content"]
+        .as_str()
+        .ok_or("Failed to extract content from response")?
+        .to_string();
+
+    Ok(content)
 }

@@ -44,15 +44,11 @@ Make sure to set the required environment variables before running the binary.
 
 For ARM macOS users, you can install askJira using Homebrew. We provide a custom tap for easy installation:
 
-1. Add the custom tap:
 ```
-brew tap kiraum/askjira https://github.com/kiraum/askJira
+brew install kiraum/tap/askjira
 ```
 
-2. Install askJira:
-```
-brew install askjira
-```
+if you don't have Homebrew installed, you can install it [here](https://brew.sh/).
 
 This will install the latest version of askJira on your system. You can then run it directly from the command line:
 ```
