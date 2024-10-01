@@ -70,12 +70,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         env::var("SRC_ENDPOINT").expect("Error: SRC_ENDPOINT environment variable is not set.");
 
     if opt.list_models {
-        list_available_models(&endpoint).await?;
+        list_available_models(&endpoint, &access_token).await?;
         return Ok(());
     }
 
     let model = if let Some(set_model) = opt.set_model {
-        let available_models = fetch_available_models(&endpoint).await?;
+        let available_models = fetch_available_models(&endpoint, &access_token).await?;
         if available_models.contains(&set_model) {
             set_model
         } else {
@@ -193,14 +193,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
     result
 }
 
-async fn fetch_available_models(endpoint: &str) -> Result<Vec<String>, Box<dyn Error>> {
+async fn fetch_available_models(
+    endpoint: &str,
+    access_token: &str,
+) -> Result<Vec<String>, Box<dyn Error>> {
     let models_url = format!("{}/.api/llm/models", endpoint);
     let client = Client::new();
-    let response = client
-        .get(&models_url)
-        .header("Accept", "application/json")
-        .send()
-        .await?;
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {}", access_token))?,
+    );
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+
+    let response = client.get(&models_url).headers(headers).send().await?;
 
     let response_text = response.text().await?;
     debug!("Raw response from models API: {}", response_text);
@@ -222,8 +229,8 @@ async fn fetch_available_models(endpoint: &str) -> Result<Vec<String>, Box<dyn E
     Ok(available_models)
 }
 
-async fn list_available_models(endpoint: &str) -> Result<(), Box<dyn Error>> {
-    let available_models = fetch_available_models(endpoint).await?;
+async fn list_available_models(endpoint: &str, access_token: &str) -> Result<(), Box<dyn Error>> {
+    let available_models = fetch_available_models(endpoint, access_token).await?;
     println!("Available models:");
     for model in available_models {
         println!("- {}", model);
