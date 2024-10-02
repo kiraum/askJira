@@ -1,4 +1,5 @@
 use env_logger::Env;
+use futures::future::join_all;
 use indicatif::{ProgressBar, ProgressStyle};
 use log::{debug, warn};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
@@ -7,11 +8,10 @@ use serde_json::{json, Value};
 use std::env;
 use std::error::Error;
 use std::process;
+use std::sync::Arc;
 use std::time::Duration;
 use structopt::StructOpt;
-use futures::future::join_all;
 use tokio::sync::Semaphore;
-use std::sync::Arc;
 
 /// Command-line options for the askJira application
 #[derive(StructOpt, Debug)]
