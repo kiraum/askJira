@@ -9,6 +9,9 @@ use std::error::Error;
 use std::process;
 use std::time::Duration;
 use structopt::StructOpt;
+use futures::future::join_all;
+use tokio::sync::Semaphore;
+use std::sync::Arc;
 
 /// Command-line options for the askJira application
 #[derive(StructOpt, Debug)]
@@ -390,7 +393,10 @@ async fn process_jira_data(
     headers: &HeaderMap,
     model: &str,
 ) -> Result<Vec<String>, Box<dyn Error>> {
+    /// batch limit due Cody input limit
     const BATCH_SIZE: usize = 200_000;
+    /// safe limit to protect the APIs from overloading
+    const MAX_CONCURRENT_TASKS: usize = 50;
 
     let jira_data: Value = serde_json::from_str(&jira_data)?;
     if jira_data.as_array().unwrap().is_empty() {
@@ -420,32 +426,45 @@ async fn process_jira_data(
     let total_batches = batches.len();
     debug!("Created {} batches of Jira data", total_batches);
 
-    let mut batch_summaries = Vec::new();
-    for (i, batch) in batches.into_iter().enumerate() {
-        let batch_str = serde_json::to_string(&batch)?;
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_TASKS));
+    let batch_futures = batches.into_iter().enumerate().map(|(i, batch)| {
+        let batch_str = serde_json::to_string(&batch).unwrap();
         let batch_query = format!(
             "Question(s):\n{}\n\nJira data:\n{}\n\nBased on Jira data, please provide a comprehensive answer for the question(s).",
             message,
             batch_str
         );
 
-        debug!(
-            "Processing batch {} out of {} of size {} characters",
-            i + 1,
-            total_batches,
-            batch_query.len()
-        );
-        let batch_summary = cody_chat(&batch_query, chat_completions_url, headers, model).await?;
-        debug!(
-            "Processed batch {} out of {} answer:\n{}",
-            i + 1,
-            total_batches,
-            batch_summary
-        );
-        batch_summaries.push(batch_summary);
-    }
+        let chat_completions_url = chat_completions_url.to_string();
+        let headers = headers.clone();
+        let model = model.to_string();
+        let sem = semaphore.clone();
 
-    Ok(batch_summaries)
+        async move {
+            let _permit = sem.acquire().await.unwrap();
+            debug!(
+                "Processing batch {} out of {} of size {} characters",
+                i + 1,
+                total_batches,
+                batch_query.len()
+            );
+            let batch_summary = cody_chat(&batch_query, &chat_completions_url, &headers, &model).await?;
+            debug!(
+                "Processed batch {} out of {} answer:\n{}",
+                i + 1,
+                total_batches,
+                batch_summary
+            );
+            Ok::<String, Box<dyn Error>>(batch_summary)
+        }
+    });
+
+    let batch_results = join_all(batch_futures).await;
+    let batch_summaries: Result<Vec<String>, Box<dyn Error>> = batch_results
+        .into_iter()
+        .collect::<Result<Vec<String>, Box<dyn Error>>>();
+
+    batch_summaries
 }
 
 /// Send a chat query to Cody and get a response
