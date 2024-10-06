@@ -37,7 +37,7 @@ dependencies = [
 
 [[package]]
 name = "askJira"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "base64 0.13.1",
  "env_logger",

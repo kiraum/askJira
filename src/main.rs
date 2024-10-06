@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use structopt::StructOpt;
 use tokio::sync::Semaphore;
+use tokio::time::sleep;
 
 /// Command-line options for the askJira application
 #[derive(StructOpt, Debug)]
@@ -28,10 +29,14 @@ struct Opt {
     #[structopt(long, help = "JQL query to search Jira tickets")]
     jql: Option<String>,
 
+    /// Automatically generate JQL based on the message
+    #[structopt(long, help = "Automatically generate JQL based on the message")]
+    auto_jql: bool,
+
     /// Maximum number of issues to fetch
     #[structopt(
         long,
-        default_value = "1000",
+        default_value = "100000",
         help = "Maximum number of issues to fetch"
     )]
     max_issues: usize,
@@ -104,9 +109,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         "anthropic::2023-06-01::claude-3.5-sonnet".to_string()
     };
 
-    // Check if message or JQL is provided
-    if opt.message.is_none() && opt.jql.is_none() {
-        warn!("No message or JQL provided. Printing help.");
+    // Check if message is provided
+    if opt.message.is_none() {
+        warn!("No message provided. Printing help.");
         Opt::clap().print_help().unwrap();
         println!();
         process::exit(0);
@@ -137,76 +142,214 @@ async fn main() -> Result<(), Box<dyn Error>> {
     pb.set_message("Processing...");
 
     // Process the request based on provided options
-    let result = match (opt.jql, opt.message) {
-        (Some(jql), Some(message)) => {
+    let result = match (opt.jql, opt.message, opt.auto_jql) {
+        (Some(_), _, true) => Err("--auto-jql cannot be used with --jql".into()),
+        (None, Some(message), true) => {
             debug!(
-                "Both JQL and message provided. JQL: {:?}, Message: {:?}",
-                jql, message
+                "Automatically generating JQL based on message: {:?}",
+                message
             );
             let jira_token =
-                env::var("JIRA_TOKEN").map_err(|_| "JIRA_TOKEN environment variable is not set")?;
+                env::var("JIRA_TOKEN").expect("JIRA_TOKEN environment variable is not set");
             let jira_host =
-                env::var("JIRA_HOST").map_err(|_| "JIRA_HOST environment variable is not set")?;
-
-            debug!("JIRA_HOST = {}", jira_host);
-            debug!("JQL Query = {:?}", jql);
-
-            let jira_data = fetch_jira_data(
+                env::var("JIRA_HOST").expect("JIRA_HOST environment variable is not set");
+            let jira_projects = fetch_jira_projects(&jira_host, &jira_token).await?;
+            debug!("Jira projects: {:?}", jira_projects);
+            let auto_generated_jql = auto_generate_jql(
+                &message,
+                &jira_projects,
+                &chat_completions_url,
+                &headers,
+                &model,
                 &jira_host,
                 &jira_token,
-                &jql,
-                opt.max_issues,
-                opt.max_results,
             )
             .await?;
-            debug!("Jira data fetched, length: {} characters", jira_data.len());
-
-            let batch_summaries =
-                process_jira_data(&message, jira_data, &chat_completions_url, &headers, &model)
-                    .await?;
-            debug!(
-                "Jira data processed, {} batch summaries",
-                batch_summaries.len()
-            );
-
-            if batch_summaries.is_empty() {
-                println!("Answer: No Jira data found for the given query.");
-                return Ok(());
-            }
-
-            let aggregated_summaries = batch_summaries.join("\n\n--- Next Batch Summary ---\n\n");
-
-            let final_query = format!(
-                "Original question(s):\n{}\n\nJira data batches:\n{}\n\nBased on these batches, please provide a comprehensive and cohesive answer to the original question(s). Synthesize the information from all batch summaries, highlighting key points, trends, and insights relevant to the question(s).",
-                message,
-                aggregated_summaries
-            );
-
-            debug!("Final query length: {} characters", final_query.len());
-            let final_answer =
-                cody_chat(&final_query, &chat_completions_url, &headers, &model).await?;
-            println!("Answer:\n{}", final_answer);
-            Ok(())
+            warn!("Auto-generated JQL: {}", auto_generated_jql);
+            println!("Auto-generated JQL: {}", auto_generated_jql);
+            debug!("Auto-generated JQL: {}", auto_generated_jql);
+            process_jira_query(
+                &message,
+                &auto_generated_jql,
+                &jira_host,
+                &jira_token,
+                opt.max_issues,
+                opt.max_results,
+                &chat_completions_url,
+                &headers,
+                &model,
+            )
+            .await
         }
-        (None, Some(message)) => {
+        (Some(jql), Some(message), false) => {
+            let jira_token =
+                env::var("JIRA_TOKEN").expect("JIRA_TOKEN environment variable is not set");
+            let jira_host =
+                env::var("JIRA_HOST").expect("JIRA_HOST environment variable is not set");
+            process_jira_query(
+                &message,
+                &jql,
+                &jira_host,
+                &jira_token,
+                opt.max_issues,
+                opt.max_results,
+                &chat_completions_url,
+                &headers,
+                &model,
+            )
+            .await
+        }
+        (None, Some(message), false) => {
             debug!("Only message provided, no JQL. Message: {:?}", message);
             let answer = cody_chat(&message, &chat_completions_url, &headers, &model).await?;
             pb.finish_and_clear();
             println!("Answer:\n{}", answer);
             Ok(())
         }
-        (Some(_), None) => {
-            warn!("JQL provided without a message");
-            Err("When using --jql, --message is also required".into())
-        }
-        (None, None) => {
-            warn!("Neither JQL nor message provided");
-            Err("Either --message or both --message and --jql must be provided".into())
+        _ => {
+            warn!("Invalid combination of options");
+            Err(
+                "Invalid combination of options. Use --message with either --jql or --auto-jql"
+                    .into(),
+            )
         }
     };
 
     pb.finish_and_clear();
     result
+}
+
+async fn fetch_jira_projects(host: &str, token: &str) -> Result<Vec<String>, Box<dyn Error>> {
+    let client = Client::new();
+    let projects_url = format!("{}/rest/api/2/project", host);
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {}", token))?,
+    );
+
+    let response = client.get(&projects_url).headers(headers).send().await?;
+    let projects: Vec<Value> = response.json().await?;
+
+    Ok(projects
+        .into_iter()
+        .filter_map(|p| p["key"].as_str().map(String::from))
+        .collect())
+}
+
+async fn auto_generate_jql(
+    message: &str,
+    projects: &[String],
+    chat_completions_url: &str,
+    headers: &HeaderMap,
+    model: &str,
+    jira_host: &str,
+    jira_token: &str,
+) -> Result<String, Box<dyn Error>> {
+    // Check if any project key is present in the message
+    let found_project = projects.iter().find(|&project| {
+        message
+            .to_uppercase()
+            .split_whitespace()
+            .any(|word| word == project)
+    });
+
+    if let Some(project) = found_project {
+        debug!("Found project in message: {}", project);
+    } else {
+        debug!("No exact project match found in message");
+    }
+
+    let prompt = if let Some(project) = found_project {
+        // Fetch more information about the project
+        let project_info = fetch_project_info(jira_host, jira_token, project).await?;
+        debug!("Project information: {}", project_info);
+
+        format!(
+            "Given the following question and project information, generate a valid JQL query to search for relevant issues in the {} project. Use only the components, issue types, and fields that exist in the provided project information. Ensure the query is specific to the question asked, but avoid overly broad conditions. Provide only the JQL query without any explanation or additional clauses:\n\nQuestion: {}\n\nProject Information:\n{}",
+            project,
+            message,
+            project_info
+        )
+    } else {
+        format!(
+            "Given the following question and list of Jira projects, generate a valid JQL query to search for relevant issues, avoid overly broad conditions that might lead to false positives. Provide only the JQL query without any explanation, LIMIT clause, labels clause, or anything else:\n\nQuestion: {}\n\nProjects: {}",
+            message,
+            projects.join(", ")
+        )
+    };
+
+    let auto_generated_jql = cody_chat(&prompt, chat_completions_url, headers, model).await?;
+
+    Ok(auto_generated_jql.trim().to_string())
+}
+
+async fn fetch_project_info(
+    host: &str,
+    token: &str,
+    project_key: &str,
+) -> Result<String, Box<dyn Error>> {
+    let client = Client::new();
+    let project_url = format!("{}/rest/api/2/project/{}", host, project_key);
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {}", token))?,
+    );
+
+    let response = client.get(&project_url).headers(headers).send().await?;
+    let project_data: Value = response.json().await?;
+
+    Ok(project_data.to_string())
+}
+
+async fn process_jira_query(
+    message: &str,
+    jql: &str,
+    jira_host: &str,
+    jira_token: &str,
+    max_issues: usize,
+    max_results: usize,
+    chat_completions_url: &str,
+    headers: &HeaderMap,
+    model: &str,
+) -> Result<(), Box<dyn Error>> {
+    debug!(
+        "Processing Jira query. JQL: {:?}, Message: {:?}",
+        jql, message
+    );
+    debug!("JIRA_HOST = {}", jira_host);
+    debug!("JQL Query = {:?}", jql);
+
+    let jira_data = fetch_jira_data(jira_host, jira_token, jql, max_issues, max_results).await?;
+    debug!("Jira data fetched, length: {} characters", jira_data.len());
+
+    let batch_summaries =
+        process_jira_data(message, jira_data, chat_completions_url, headers, model).await?;
+    debug!(
+        "Jira data processed, {} batch summaries",
+        batch_summaries.len()
+    );
+
+    if batch_summaries.is_empty() {
+        println!("Answer: No Jira data found for the given query.");
+        return Ok(());
+    }
+
+    let aggregated_summaries = batch_summaries.join("\n\n--- Next Batch Summary ---\n\n");
+
+    let final_query = format!(
+        "Original question(s):\n{}\n\nJira data batches:\n{}\n\nBased on these batches, please provide a comprehensive and cohesive answer to the original question(s). Synthesize the information from all batch summaries, highlighting key points, trends, and insights relevant to the question(s).",
+        message,
+        aggregated_summaries
+    );
+
+    debug!("Final query length: {} characters", final_query.len());
+    let final_answer = cody_chat(&final_query, chat_completions_url, headers, model).await?;
+    println!("Answer:\n{}", final_answer);
+    Ok(())
 }
 
 /// Fetch available models from the API
@@ -482,12 +625,37 @@ async fn cody_chat(
     ]);
 
     debug!("Sending chat query of length: {} characters", query.len());
-    let response = chat_completions(messages, chat_completions_url, headers, model).await?;
-    debug!(
-        "Received chat response of length: {} characters",
-        response.len()
-    );
-    Ok(response)
+
+    const MAX_RETRIES: u32 = 5;
+    const INITIAL_BACKOFF: u64 = 1000; // 1s
+
+    for attempt in 0..MAX_RETRIES {
+        match chat_completions(messages.clone(), chat_completions_url, headers, model).await {
+            Ok(response) => {
+                debug!(
+                    "Received chat response of length: {} characters",
+                    response.len()
+                );
+                return Ok(response);
+            }
+            Err(e) => {
+                if attempt < MAX_RETRIES - 1 {
+                    let backoff = INITIAL_BACKOFF * 2u64.pow(attempt);
+                    warn!(
+                        "Attempt {} failed: {}. Retrying in {} ms...",
+                        attempt + 1,
+                        e,
+                        backoff
+                    );
+                    sleep(Duration::from_millis(backoff)).await;
+                } else {
+                    return Err(e);
+                }
+            }
+        }
+    }
+
+    Err("Max retries reached".into())
 }
 
 /// Send a chat completion request and process the response
@@ -520,16 +688,15 @@ async fn chat_completions(
         .send()
         .await?;
 
-    // Print the status code
     debug!("Response status: {:?}", response.status());
 
-    // Get the response text
-    let response_text = response.text().await?;
+    if !response.status().is_success() {
+        return Err(format!("HTTP error: {}", response.status()).into());
+    }
 
-    // Print the raw response
+    let response_text = response.text().await?;
     debug!("Raw response: {}", response_text);
 
-    // Try to parse the response as JSON
     let response_body: Value = serde_json::from_str(&response_text).map_err(|e| {
         format!(
             "Failed to parse JSON: {}. Raw response: {}",
