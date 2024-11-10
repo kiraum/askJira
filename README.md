@@ -84,8 +84,9 @@ cargo run -- --message "Your question here" --jql "project = PROJ and created > 
 ````
 
 Additional options:
-- `--max-issues`: Maximum number of issues to fetch (default: 1000)
+- `--max-issues`: Maximum number of issues to fetch (default: 100000)
 - `--max-results`: Maximum number of results per Jira API call (default: 100)
+- ` --max-tokens`: Maximum number of tokens in the response [default: 2000]
 - `--debug`: Enable debug mode
 - `--list-models`: List available models
 - `--set-model`: Set the model to use

@@ -60,6 +60,14 @@ struct Opt {
     /// Set the model to use
     #[structopt(long, help = "Set the model to use")]
     set_model: Option<String>,
+
+    /// Maximum number of tokens in the response
+    #[structopt(
+        long,
+        default_value = "2000",
+        help = "Maximum number of tokens in the response"
+    )]
+    max_tokens: usize,
 }
 
 /// Main function to run the askJira application
@@ -163,6 +171,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 &model,
                 &jira_host,
                 &jira_token,
+                opt.max_tokens,
             )
             .await?;
             warn!("Auto-generated JQL: {}", auto_generated_jql);
@@ -178,6 +187,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 &chat_completions_url,
                 &headers,
                 &model,
+                opt.max_tokens,
             )
             .await
         }
@@ -196,13 +206,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 &chat_completions_url,
                 &headers,
                 &model,
+                opt.max_tokens,
             )
             .await
         }
         (None, Some(message), false) => {
             debug!("Only message provided, no JQL. Message: {:?}", message);
-            let answer = cody_chat(&message, &chat_completions_url, &headers, &model).await?;
+            let answer = cody_chat(
+                &message,
+                &chat_completions_url,
+                &headers,
+                &model,
+                opt.max_tokens,
+            )
+            .await?;
             pb.finish_and_clear();
+            println!();
             println!("Answer:\n{}", answer);
             Ok(())
         }
@@ -216,6 +235,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
 
     pb.finish_and_clear();
+    println!();
     result
 }
 
@@ -238,6 +258,7 @@ async fn fetch_jira_projects(host: &str, token: &str) -> Result<Vec<String>, Box
         .collect())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn auto_generate_jql(
     message: &str,
     projects: &[String],
@@ -246,6 +267,7 @@ async fn auto_generate_jql(
     model: &str,
     jira_host: &str,
     jira_token: &str,
+    max_tokens: usize,
 ) -> Result<String, Box<dyn Error>> {
     // Check if any project key is present in the message
     let found_project = projects.iter().find(|&project| {
@@ -280,7 +302,8 @@ async fn auto_generate_jql(
         )
     };
 
-    let auto_generated_jql = cody_chat(&prompt, chat_completions_url, headers, model).await?;
+    let auto_generated_jql =
+        cody_chat(&prompt, chat_completions_url, headers, model, max_tokens).await?;
 
     Ok(auto_generated_jql.trim().to_string())
 }
@@ -305,6 +328,7 @@ async fn fetch_project_info(
     Ok(project_data.to_string())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn process_jira_query(
     message: &str,
     jql: &str,
@@ -315,6 +339,7 @@ async fn process_jira_query(
     chat_completions_url: &str,
     headers: &HeaderMap,
     model: &str,
+    max_tokens: usize,
 ) -> Result<(), Box<dyn Error>> {
     debug!(
         "Processing Jira query. JQL: {:?}, Message: {:?}",
@@ -326,8 +351,15 @@ async fn process_jira_query(
     let jira_data = fetch_jira_data(jira_host, jira_token, jql, max_issues, max_results).await?;
     debug!("Jira data fetched, length: {} characters", jira_data.len());
 
-    let batch_summaries =
-        process_jira_data(message, jira_data, chat_completions_url, headers, model).await?;
+    let batch_summaries = process_jira_data(
+        message,
+        jira_data,
+        chat_completions_url,
+        headers,
+        model,
+        max_tokens,
+    )
+    .await?;
     debug!(
         "Jira data processed, {} batch summaries",
         batch_summaries.len()
@@ -347,7 +379,14 @@ async fn process_jira_query(
     );
 
     debug!("Final query length: {} characters", final_query.len());
-    let final_answer = cody_chat(&final_query, chat_completions_url, headers, model).await?;
+    let final_answer = cody_chat(
+        &final_query,
+        chat_completions_url,
+        headers,
+        model,
+        max_tokens,
+    )
+    .await?;
     println!("Answer:\n{}", final_answer);
     Ok(())
 }
@@ -535,6 +574,7 @@ async fn process_jira_data(
     chat_completions_url: &str,
     headers: &HeaderMap,
     model: &str,
+    max_tokens: usize,
 ) -> Result<Vec<String>, Box<dyn Error>> {
     /// batch limit due Cody input limit
     const BATCH_SIZE: usize = 200_000;
@@ -591,7 +631,7 @@ async fn process_jira_data(
                 total_batches,
                 batch_query.len()
             );
-            let batch_summary = cody_chat(&batch_query, &chat_completions_url, &headers, &model).await?;
+            let batch_summary = cody_chat(&batch_query, &chat_completions_url, &headers, &model, max_tokens).await?;
             debug!(
                 "Processed batch {} out of {} answer:\n{}",
                 i + 1,
@@ -616,6 +656,7 @@ async fn cody_chat(
     chat_completions_url: &str,
     headers: &HeaderMap,
     model: &str,
+    max_tokens: usize,
 ) -> Result<String, Box<dyn Error>> {
     let messages = json!([
         {
@@ -630,7 +671,15 @@ async fn cody_chat(
     const INITIAL_BACKOFF: u64 = 1000; // 1s
 
     for attempt in 0..MAX_RETRIES {
-        match chat_completions(messages.clone(), chat_completions_url, headers, model).await {
+        match chat_completions(
+            messages.clone(),
+            chat_completions_url,
+            headers,
+            model,
+            max_tokens,
+        )
+        .await
+        {
             Ok(response) => {
                 debug!(
                     "Received chat response of length: {} characters",
@@ -664,10 +713,11 @@ async fn chat_completions(
     chat_completions_url: &str,
     headers: &HeaderMap,
     model: &str,
+    max_tokens: usize,
 ) -> Result<String, Box<dyn Error>> {
     let data = json!({
         "model": model,
-        "max_tokens": 2000,
+        "max_tokens": max_tokens,
         "messages": messages,
         "stream": false
     });
