@@ -10,14 +10,15 @@ A Rust-based CLI tool that integrates Cody's AI capabilities with Jira ticket da
 ## Dependencies
 
 This project uses the following dependencies:
-- tokio (1.0+)
-- reqwest (0.11+)
-- serde_json (1.0+)
-- structopt (0.3+)
-- futures (0.3+)
-- env_logger
-- indicatif
-- log
+- tokio (1.28+)
+- reqwest (0.11.18+)
+- serde_json (1.0.96+)
+- base64 (0.13.0+)
+- simple_logger (4.3.0+)
+- futures (0.3.28+)
+- indicatif (0.16+)
+- log (0.4+)
+- argh (0.1.12+)
 
 ## Environment Variables
 
