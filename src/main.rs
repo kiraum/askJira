@@ -1,3 +1,4 @@
+use argh::FromArgs;
 use futures::future::join_all;
 use indicatif::{ProgressBar, ProgressStyle};
 use log::{debug, warn};
@@ -9,76 +10,72 @@ use std::error::Error;
 use std::process;
 use std::sync::Arc;
 use std::time::Duration;
-use structopt::StructOpt;
 use tokio::sync::Semaphore;
 use tokio::time::sleep;
 
 /// Command-line options for the askJira application
-#[derive(StructOpt, Debug)]
-#[structopt(
-    name = "askJira",
-    about = "Ask Cody a question or a question about Jira tickets if JQL is provided."
-)]
+#[derive(FromArgs, Debug)]
+#[argh(description = "ask Cody a question or a question about Jira tickets if JQL is provided.")]
+/// askJira - AI-powered Jira ticket analysis tool
 struct Opt {
-    /// The message to send to Cody
-    #[structopt(long, help = "The message to send to Cody")]
-    message: Option<String>,
+    // FLAGS section
+    /// show version information [flag]
+    #[argh(switch, short = 'v')]
+    version: bool,
 
-    /// JQL query to search Jira tickets
-    #[structopt(long, help = "JQL query to search Jira tickets")]
-    jql: Option<String>,
-
-    /// Automatically generate JQL based on the message
-    #[structopt(long, help = "Automatically generate JQL based on the message")]
-    auto_jql: bool,
-
-    /// Maximum number of issues to fetch
-    #[structopt(
-        long,
-        default_value = "100000",
-        help = "Maximum number of issues to fetch"
-    )]
-    max_issues: usize,
-
-    /// Maximum number of results per Jira API call
-    #[structopt(
-        long,
-        default_value = "100",
-        help = "Maximum number of results per Jira API call"
-    )]
-    max_results: usize,
-
-    /// Enable debug mode
-    #[structopt(long, help = "Enable debug mode")]
+    /// enable debug mode [flag] [default: false]
+    #[argh(switch, short = 'd')]
     debug: bool,
 
-    /// List available models
-    #[structopt(long, help = "List available models")]
+    /// automatically generate JQL based on the message [flag] [default: false]
+    #[argh(switch, short = 'a')]
+    auto_jql: bool,
+
+    /// list available models [flag] [default: false]
+    #[argh(switch, short = 'l')]
     list_models: bool,
 
-    /// Set the model to use
-    #[structopt(long, help = "Set the model to use")]
+    // OPTIONS section
+    /// the message to send to Cody [option] [str]
+    #[argh(option, short = 'm')]
+    message: Option<String>,
+
+    /// jQL query to search Jira tickets [option] [JQL]
+    #[argh(option, short = 'j')]
+    jql: Option<String>,
+
+    /// maximum number of issues to fetch [option] [default: 100000]
+    #[argh(option, short = 'i', default = "100000")]
+    max_issues: usize,
+
+    /// maximum number of results per Jira API call [option] [default: 100]
+    #[argh(option, short = 'r', default = "100")]
+    max_results: usize,
+
+    /// set the model to use [option] [check --list-models]
+    #[argh(option, short = 's')]
     set_model: Option<String>,
 
-    /// Maximum number of tokens in the response
-    #[structopt(
-        long,
-        default_value = "2000",
-        help = "Maximum number of tokens in the response"
-    )]
+    /// maximum number of tokens in the response [option] [default: 2000]
+    #[argh(option, short = 't', default = "2000")]
     max_tokens: usize,
 }
 
 /// Main function to run the askJira application
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let opt = Opt::from_args();
+    let opt: Opt = argh::from_env();
 
     // Set up logging based on debug flag
     if opt.debug {
         simple_logger::init_with_level(log::Level::Debug).unwrap();
     } else {
         simple_logger::init_with_level(log::Level::Info).unwrap();
+    }
+
+    if opt.version {
+        println!("askJira {}", env!("CARGO_PKG_VERSION"));
+        process::exit(0);
     }
 
     debug!(
@@ -118,8 +115,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Check if message is provided
     if opt.message.is_none() {
         warn!("No message provided. Printing help.");
-        Opt::clap().print_help().unwrap();
         println!();
+        let help_text = <Opt as FromArgs>::from_args(&[], &["--help"]).unwrap_err();
+        println!("{}", help_text.output);
         process::exit(0);
     }
 
