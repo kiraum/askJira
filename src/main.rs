@@ -1,4 +1,3 @@
-use env_logger::Env;
 use futures::future::join_all;
 use indicatif::{ProgressBar, ProgressStyle};
 use log::{debug, warn};
@@ -76,12 +75,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let opt = Opt::from_args();
 
     // Set up logging based on debug flag
-    let env = if opt.debug {
-        Env::default().filter_or("RUST_LOG", "debug")
+    if opt.debug {
+        simple_logger::init_with_level(log::Level::Debug).unwrap();
     } else {
-        Env::default().filter_or("RUST_LOG", "info")
-    };
-    env_logger::init_from_env(env);
+        simple_logger::init_with_level(log::Level::Info).unwrap();
+    }
 
     debug!(
         "Command line arguments: {:?}",
