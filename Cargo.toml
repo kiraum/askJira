@@ -11,6 +11,6 @@ futures = "0.3.28"
 indicatif = "0.16"
 log = "0.4"
 reqwest = { version = "0.11.18", features = ["json", "stream"] }
-serde_json = "1.0.96"
+serde_json = "1.0.137"
 argh = "0.1.12"
 tokio = { version = "1.28.2", features = ["full"] }
