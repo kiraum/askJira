@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["kiraum <tfgoncalves@xpto.it>"]
 
 [dependencies]
-base64 = "0.13.1"
+base64 = "0.21.7"
 simple_logger = "4.3.3"
 futures = "0.3.31"
 indicatif = "0.16"
